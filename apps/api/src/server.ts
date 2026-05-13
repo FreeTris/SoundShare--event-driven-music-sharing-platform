@@ -1,6 +1,8 @@
 import Fastify from "fastify";
 import dotenv from "dotenv";
 import { fetch } from "undici";
+import pg from "pg";
+import cors from "@fastify/cors";
 
 dotenv.config({
   path: ".env",
@@ -8,6 +10,13 @@ dotenv.config({
 
 const app = Fastify({
   logger: true,
+});
+
+const pool = new pg.Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false,
+  },
 });
 
 type SharedSong = {
@@ -21,8 +30,6 @@ type SharedSong = {
   caption?: string;
   sharedAt: string;
 };
-
-const sharedSongs: SharedSong[] = [];
 
 app.get("/health", async () => {
   return {
@@ -130,31 +137,105 @@ app.get("/spotify/search", async (request, reply) => {
   }
 });
 
-app.post("/songs/share", async (request) => {
-  const body = request.body as Omit<
-    SharedSong,
-    "sharedAt"
-  >;
+app.post("/songs/share", async (request, reply) => {
+  try {
+    const body = request.body as Omit<
+      SharedSong,
+      "sharedAt"
+    >;
 
-  const sharedSong: SharedSong = {
-    ...body,
-    sharedAt: new Date().toISOString(),
-  };
+    const result = await pool.query(
+      `
+      insert into shared_songs (
+        id,
+        title,
+        artists,
+        album,
+        album_image,
+        spotify_url,
+        shared_by,
+        caption
+      )
+      values ($1, $2, $3, $4, $5, $6, $7, $8)
+      returning
+        id,
+        title,
+        artists,
+        album,
+        album_image as "albumImage",
+        spotify_url as "spotifyUrl",
+        shared_by as "sharedBy",
+        caption,
+        shared_at as "sharedAt";
+      `,
+      [
+        body.id,
+        body.title,
+        body.artists,
+        body.album,
+        body.albumImage ?? null,
+        body.spotifyUrl,
+        body.sharedBy,
+        body.caption ?? null,
+      ]
+    );
 
-  sharedSongs.unshift(sharedSong);
+    return {
+      success: true,
+      song: result.rows[0],
+    };
+  } catch (error) {
+    request.log.error(error);
 
-  return {
-    success: true,
-    song: sharedSong,
-  };
+    return reply.status(500).send({
+      error: "Failed to share song",
+      message:
+        error instanceof Error
+          ? error.message
+          : "Unknown error",
+    });
+  }
 });
 
-app.get("/feed", async () => {
-  return sharedSongs;
+app.get("/feed", async (request, reply) => {
+  try {
+    const result = await pool.query(
+      `
+      select
+        id,
+        title,
+        artists,
+        album,
+        album_image as "albumImage",
+        spotify_url as "spotifyUrl",
+        shared_by as "sharedBy",
+        caption,
+        shared_at as "sharedAt"
+      from shared_songs
+      order by shared_at desc;
+      `
+    );
+
+    return result.rows;
+  } catch (error) {
+    request.log.error(error);
+
+    return reply.status(500).send({
+      error: "Failed to load feed",
+      message:
+        error instanceof Error
+          ? error.message
+          : "Unknown error",
+    });
+  }
 });
 
 const start = async () => {
   try {
+    await app.register(cors, {
+      origin: "http://localhost:5173",
+    });
+
     await app.listen({
       port: 3000,
       host: "0.0.0.0",
