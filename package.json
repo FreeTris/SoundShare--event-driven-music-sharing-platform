@@ -1,0 +1,14 @@
+{
+  "name": "soundshare",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/api",
+    "apps/worker",
+    "packages/shared"
+  ],
+  "scripts": {
+    "dev:api": "npm run dev -w apps/api",
+    "dev:worker": "npm run dev -w apps/worker"
+  }
+}
